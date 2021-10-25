@@ -70,14 +70,45 @@ plot(lf)  # now more useful categories are shown
 
 The package `terra` has functions to create buffers around points and extract land cover from a raster within those buffers.
 
-```{r extract_buffer}
-farms.vect <- vect(farms.sf) # convert the points to vect format
+In order to analyze the farm points and the land cover data together, they have to be in the same coordinate system, otherwise they won't overlap, or overlap incorrectly. Therefore we are going to project both layers into the same coordinate system. I selected one from the site referenced above, see: https://epsg.io/?q=puerto+rico.
 
+```{r extract_buffer}
+farms.vect <- vect(farms.sf) # convert the points to vect format, for the terra package
+
+# re-project the points and land cover layers to the same coordinate system
 farms.pr <- project(farms.vect, "epsg:6566") # project the points to a PR projection
 lf.pr <- project(lf, "epsg:6566") # project the land fire layer to the same PR projection
 
+# create a 500 m buffer around the points
 farms500 <- buffer(farms.pr, width = 500) # buffer by 500 m
 
-lf500 <- terra::extract(lf.pr, farms500, list = TRUE, touches = TRUE) %>% lapply(table) %>% bind_rows()
+# use the terra function "extract" to isolate the cells in the land cover layer that coincide with the 500 m buffers
+lf500 <- terra::extract(lf.pr, farms500, list = TRUE, touches = TRUE) %>%
+  lapply(table) %>%  # the output of extract is a list; this summarizes each buffer into a table (still in a list)
+  bind_rows() %>% # output of extract is a list; this condenses all buffers into one table
+  bind_cols(site = farms500$PESTS_sitename)  # re-add the site name from the buffer layer
+
+```
+
+## Examining the buffer data
+
+The columns of the output data are land use types codes. We can match them up to their more descriptive titles in the original 
+
+```{r buffer_data}
+# the table of attributes of the land cover dataset can be accessed with the "cats()" function
+lf.cats <- cats(lf.pr)[[1]]  # the double brackets is because the output is a list consisting of only one dataframe. We just need to look at the dataframe, which we access using the double brackets.
+
+# For plotting,let's make a long dataset with columns for the site and land cover type
+lf500.long <- pivot_longer(lf500, 
+                           cols = `6336`:`7292`,
+                           names_to = "ID",
+                           values_to = "area") %>%
+  mutate(ID = as.numeric(ID)) %>%
+  left_join(lf.cats %>% dplyr::select(ID, GROUP:B), by = "ID")
+
+# plot
+ggplot(lf500.long, aes(x = site, y = area, fill = GROUP)) + 
+  geom_bar(stat = "identity") + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
 
 ```
