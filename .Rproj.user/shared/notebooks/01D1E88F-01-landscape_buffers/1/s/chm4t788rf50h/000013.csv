@@ -1,0 +1,11 @@
+"0","# plot the points
+ggplot(farms.sf) + annotation_map_tile(zoomin = -1) + geom_sf() +
+  geom_sf_text_repel(aes(label = PESTS_sitename), size = 3)
+"
+"2","Warning in st_point_on_surface.sfc(data$geometry) :"
+"2","
+ "
+"2"," st_point_on_surface may not give correct results for longitude/latitude data
+"
+"2","Zoom: 11
+"
