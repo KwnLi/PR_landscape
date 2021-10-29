@@ -7,7 +7,7 @@ output: html_document
 
 ## Landscape buffer analysis
 
-This session is to introduce loading raster data to R and performing a simple analysis on it. We will use `sf`, a package for handling geographic data, `terra`, a package for handling raster data, and the `tidyverse` package, which includes `ggplot` and other useful functions. `ggplot` includes functions for plotting georeferenced vector data (points, polygons, and lines), but not raster data. For this we use `ggspatial` and `rasterVis`.
+This session is to introduce loading raster data to R and performing a simple analysis on it. We will use `sf`, a package for handling geographic data, `terra`, a package for handling raster data, and the `tidyverse` package, which includes `ggplot` and other useful functions. `ggplot` includes functions for plotting georeferenced vector data (points, polygons, and lines), but not raster data. For this we use `ggspatial`.
 
 ```{r load_packages, message = FALSE}
 library(sf)
@@ -15,7 +15,6 @@ library(terra)
 library(tidyverse)
 library(ggspatial)
 library(ggsflabel)
-library(rasterVis)
 #library(landscapemetrics)
 ```
 
@@ -83,10 +82,12 @@ lf.pr <- project(lf, "epsg:6566") # project the land fire layer to the same PR p
 farms500 <- buffer(farms.pr, width = 500) # buffer by 500 m
 
 # use the terra function "extract" to isolate the cells in the land cover layer that coincide with the 500 m buffers
-lf500 <- terra::extract(lf.pr, farms500, list = TRUE, touches = TRUE) %>%
+lf500 <- terra::extract(lf.pr, farms500, list = TRUE, touches = TRUE, xy = TRUE) %>%
   lapply(table) %>%  # the output of extract is a list; this summarizes each buffer into a table (still in a list)
   bind_rows() %>% # output of extract is a list; this condenses all buffers into one table
   bind_cols(site = farms500$PESTS_sitename)  # re-add the site name from the buffer layer
+
+lfcrop <- terra::crop(lf.pr, farms500)
 
 ```
 
