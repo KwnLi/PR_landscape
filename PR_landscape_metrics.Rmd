@@ -1,0 +1,132 @@
+---
+title: "PR_landscape_metrics"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(sf)
+library(terra)
+library(tidyverse)
+library(ggspatial)
+library(landscapemetrics)
+library(raster)
+
+farms <- read.csv("./Data/PR_farms26.csv")
+
+farms.sf <- st_as_sf(farms,
+                     coords = c(5, 4),
+                     crs = st_crs(4326))
+
+lf <- rast("./Data/LF2016_NVC_200_PRVI/Tif/LV16_NVC_200.tif")
+lf.table <- cats(lf)[[1]]   # save the attribute table for the raster
+
+activeCat(lf) <- "MACROGRO_1"  # set the active category of the raster
+
+# as.numeric turns the raster into a numeric layer based on the active category set above
+lf.macrogroup <- as.numeric(lf)
+
+# create the list of categories for the macrogroup raster (no longer using macrogroups)
+# macrgrouplvls <- levels(as.factor(lf.table$MACROGRO_1))
+
+
+```
+
+```{r simplify_categories}
+category.relate <- read.csv("./Data/simplified_landuse.csv")  # reclassification table
+simple.cats <- read.csv("./Data/simple_categories.csv")  # table with new numeric values for simplified classes
+
+# get the numeric values for the simple categories and make a reclassificaiton table
+reclass.table <- category.relate %>% left_join(simple.cats) %>% dplyr::select(-MACROGROUP, -SIMPLE)
+
+lf.simple <- classify(lf.macrogroup, reclass.table)
+
+# check data to see if it works with landscape metrics
+check_landscape(lf.simple)
+
+```
+
+## Fix projection of farm data
+
+```{r fix_data}
+farms.vect <- vect(farms.sf) # convert the points to vect format, for the terra package
+
+# re-project the points and land cover layers to the same coordinate system
+farms.pr <- project(farms.vect, crs(lf)) # project the points to a PR projection
+
+# transform the points to match the landscape layer
+farms.pr <- st_transform(farms.sf, crs = crs(lf))
+
+# convert the points from sf to sp, which is recognized by landscapemetrics
+farms.sp <- as_Spatial(farms.pr, IDs = PESTS_sitename)
+
+```
+
+## calculate metrics for multiple radii and metrics
+
+```{r multiple_buffers}
+buf.dist <- c(500,1000,2000,5000) # buffer distances
+metrics <- c("lsm_l_area_mn", "lsm_c_ca", "lsm_l_ed", "lsm_l_te", "lsm_l_shape_mn", "lsm_l_contig_mn", "lsm_l_core_mn", "lsm_l_mesh", "lsm_l_division", "lsm_l_shdi", "lsm_l_pr", "lsm_l_shei", "lsm_l_contag")
+
+buffer.output <- list() # outputs for each buffer distance
+
+for(i in 1:length(buf.dist)){
+  buffer.output[[i]] <- sample_lsm(landscape = lf.simple, y = farms.sp,
+                            shape = "circle", size = buf.dist[i],
+                            what = metrics, 
+                            plot_id = farms.sp$PESTS_sitename)
+}
+
+# add the metric ID to each distance table and combine tables
+lsmbuffers <- map2(buffer.output, buf.dist, ~.x %>% mutate(distance = .y)) %>%
+  bind_rows()
+
+# here is a table describing the functions in the "metrics" vector
+metrics.details <- lsm_abbreviations_names %>% filter(function_name %in% metrics)
+metrics.details
+
+# write to file
+# write.csv(lsmbuffers, "lsmbuffers.csv", row.names = FALSE)
+# write.csv(metrics.details, "metrics.csv", row.names = FALSE)
+```
+
+```{r analysis_formats}
+land_data <- lsmbuffers %>% filter(level == "landscape") %>% 
+  pivot_wider(id_cols = plot_id, names_from = c(metric, distance), names_sep = "_",
+              values_from = value, values_fill = 0)
+
+class_totals <- lsmbuffers %>% filter(level == "class") %>%
+  group_by(plot_id, distance) %>% summarize(total = sum(value))
+  
+  
+pclass_data <- lsmbuffers %>% filter(level == "class") %>%
+  left_join(class_totals, by = c("plot_id", "distance")) %>%
+  mutate(pcov = value/total) %>%
+  left_join(simple.cats, by = c(class = "SIMPLENUM")) %>%
+  mutate(abvclass = SIMPLE %>% str_replace_all("[[:punct:]]", " ") %>% abbreviate(3)) %>%
+  pivot_wider(id_cols = plot_id, names_from = c(abvclass, distance), names_sep = "_",
+              values_from = pcov, values_fill = 0)
+
+write.csv(land_data, "land_data.csv", row.names = FALSE)
+write.csv(pclass_data, "pclass_data.csv", row.names = FALSE)
+```
+
+```{r land_corr}
+library(corrplot)
+library(PerformanceAnalytics)
+
+landmetric_corr <- cor(land_data %>% select(-plot_id))
+lmcorplot <- corrplot(landmetric_corr)
+
+# just at 500m 
+landmetric_corr_500 <- cor(land_data %>% select(area_mn_500:te_500))
+lmcorplot <- corrplot(landmetric_corr_500, method = "number")
+chart.Correlation(land_data %>% select(area_mn_500:te_500), histogram=TRUE, pch=19)
+
+lcp_corr_500 <- cor(pclass_data %>% select(BFB_500:RDoM_500))
+lcpcorplot <- corrplot(lcp_corr_500)
+
+test <- princomp(land_data %>% select(area_mn_500:te_500) %>% scale())
+
+biplot(test, choices = 2:3)
+```
