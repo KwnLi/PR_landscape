@@ -1,0 +1,256 @@
+---
+title: "Spatial autocorrelation update"
+author: "Kevin Li"
+date: "1/12/2022"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(tidyverse)
+library(sf)
+library(ggspatial)
+library(ape)
+library(egg)
+
+farms <- read.csv("./Data/PR_farms27.csv") %>%
+  st_as_sf(coords = c(4, 3), crs = st_crs(4326)) %>% st_transform(crs = st_crs(6566))
+
+land <- read.csv("./Data/2021_10_26_PR_farm_mean_data_with_landscape_classification_all_scales.csv") %>% select(site_name, for_100:dev_1500) %>% distinct()
+
+farm.land <- inner_join(farms, land, by = c("PESTS_sitename" = "site_name")) %>% filter(!is.na(for_100))
+
+
+# ggplot(farms) + annotation_map_tile() + geom_sf() +
+#   geom_sf_text(aes(label = PESTS_sitename), size = 3)
+
+```
+
+## Moran's I
+
+
+**I recalculated Moran's I because I realized that the % cover distributions were not normal. I normalized the data by taking the log of the % land covers (adding a small amount to eliminate 0s)**
+
+Again, I use weights based on the inverse of the distance between farms as a continuous weighting of "closeness". Below I plot the calculated Moran's I (observed) and p-values resulting from testing each land cover at each buffer distance. 
+
+```{r morani, fig.width=8, fig.height=3}
+
+farmdist <- st_distance(farm.land, farm.land)
+units(farmdist) <- NULL
+inv.farmdist <- 1/farmdist
+diag(inv.farmdist) <- 0
+landcovers <- c("agr", "pas", "for", "dev")
+radii <- seq(100, 1500, by = 100)
+
+moranout <- list()
+
+for(i in 1:4){
+  for(j in 1:length(radii)){
+    land_ij <- paste(landcovers[i], radii[j], sep = "_")
+    
+    moran_ij <- Moran.I(log(farm.land %>% st_set_geometry(NULL) %>% pull(land_ij) +
+                              (900/radii[j]^2)),
+                        inv.farmdist)
+    
+    moranout[[((i-1)*length(radii))+j]] <- data.frame(
+      landrad = land_ij,
+      land = landcovers[i],
+      dist = radii[j],
+      observed = moran_ij$observed,
+      expected = moran_ij$expected,
+      sd = moran_ij$sd,
+      p.value = moran_ij$p.value
+    )
+  }
+}
+
+morandf <- bind_rows(moranout) %>%
+  mutate(sig = ifelse(p.value < 0.05, "*", "ns"))
+
+moran_expect <- morandf$expected[1]
+
+f1a <- ggplot(morandf, aes(dist, observed, color = land, shape = land)) + 
+  geom_point() + geom_line() +
+  geom_hline(yintercept = moran_expect, lty = 2) + theme_article() +
+  xlab("Buffer distance") +
+  ylab("Observed Moran's I") +
+  geom_text(aes(x = 1350, y = moran_expect), label = "Expected",
+            nudge_y = 0.02, inherit.aes = F) +
+  theme(legend.position = "none")
+
+f1b <- ggplot(morandf, aes(dist, p.value, color = land, shape = land)) + 
+  geom_point() + geom_line() +
+  geom_hline(yintercept = 0.05, color = "red", lty = 2) + theme_article()+
+  geom_text(aes(x = 1400, y = 0.05), label = "p = 0.05",
+            nudge_y = 0.02, inherit.aes = F)
+
+ggarrange(f1a, f1b, ncol = 2, labels = c("a", "b"))
+
+```
+
+**Figure 1** Moran's I (a) and p values (b) of % land cover over different buffer distanaces (x axis). Moran's I calculated using the inverse of distance between farms as weight.
+
+These recalculated values show that % forest is *not* spatially autocorrelated, no matter what buffer distance you calculate it for (p>0.05). Agriculture is not spatially autocorrelated when calculated below buffer distances of 400m. Percent developed is not autocorrelated below 600m, except at 100m. Percent pasture is not spatially autocorrelated below 800m, except for buffers at 200-300m.
+
+
+## Spatial autocorrelation of farms with overlapping 1500m buffers
+
+I recalculated spatial autocorrelation by whether or not farms had their 1500m buffers overlapping. In other words, I am looking at whether farms within 3000m of each other were more similar to each other in terms of each of these land covers than if they were not within 3000m of each other.
+
+```{r bufferradii, warning=FALSE, include = FALSE}
+diag(farmdist) <- NA
+distfarms <- apply(farmdist, 1, FUN =mean, na.rm = TRUE)
+sdfarms <-  apply(farmdist, 1, FUN = sd, na.rm = TRUE)
+
+distdf <- data.frame(farm = farm.land$PESTS_sitename, farmdist) %>% pivot_longer(cols = X1:X25)
+
+ggplot(distdf, aes(y=farm, x = value, color = farm)) + geom_boxplot() + geom_jitter() + theme_article() + theme(legend.position = "none") +
+  xlab("Pairwise distance (m)") + scale_x_continuous(trans='log10') + geom_vline(xintercept = 3000)
+
+```
+
+<!-- **Figure 2** Distribution of pairwise farm distances. Vertical line is 3000m, 2 times the largest buffer distance. Points represent a pairiwse distance between two farms. -->
+
+
+Here, weights between 2 farms can only be 1 or 0: 1 if the farms are within 2x the max buffer distance of each other (3000m), or 0 if they are not.
+
+```{r morani_aw1, fig.width=8, fig.height=3}
+
+awt1 <- farmdist <= (2*1500)
+diag(awt1) <- 0
+
+landcovers <- c("agr", "pas", "for", "dev")
+radii <- seq(100, 1500, by = 100)
+
+awt1moran <- list()
+
+for(i in 1:4){
+  for(j in 1:length(radii)){
+    land_ij <- paste(landcovers[i], radii[j], sep = "_")
+    
+    moran_ij <- Moran.I(log(farm.land %>% st_set_geometry(NULL) %>% pull(land_ij) +
+                              (900/radii[j]^2)),
+                        awt1)
+    
+    awt1moran[[((i-1)*length(radii))+j]] <- data.frame(
+      landrad = land_ij,
+      land = landcovers[i],
+      dist = radii[j],
+      observed = moran_ij$observed,
+      expected = moran_ij$expected,
+      sd = moran_ij$sd,
+      p.value = moran_ij$p.value
+    )
+  }
+}
+
+awt1morandf <- bind_rows(awt1moran) %>%
+  mutate(sig = ifelse(p.value < 0.05, "*", "ns"))
+
+awt1_expect <- awt1morandf$expected[1]
+
+f3a <- ggplot(awt1morandf, aes(dist, observed, color = land, shape = land)) + geom_point() + geom_line() +
+  geom_hline(yintercept = awt1_expect, lty = 2) + theme_article() +
+  xlab("Buffer distance") +
+  ylab("Observed Moran's I") +
+  geom_text(aes(x = 1350, y = awt1_expect), label = "Expected",
+            nudge_y = 0.05, inherit.aes = F) +
+  theme(legend.position = "none")
+
+f3b <- ggplot(awt1morandf, aes(dist, p.value, color = land, shape = land)) + geom_point() + geom_line() +
+  geom_hline(yintercept = 0.05, color = "red", lty = 2) + theme_article() + xlab("Buffer distance") +
+  geom_text(aes(x = 1400, y = 0.05), label = "p = 0.05",
+            nudge_y = 0.02, inherit.aes = F)
+
+ggarrange(plots = list(f3a, f3b), ncol = 2, labels = c("a", "b"))
+
+```
+
+**Figure 3** Moran's I significance when only considering farms within 3000m of each other as neighbors.
+
+
+This suggests that, for farms that are within 3000m of each other (i.e. their largest buffers can overlap), all land covers except forest are significantly autocorrelated above a certain buffer distance. Agriculture % area is autocorrelated when calculated above buffers of radius 1000m; pasture area is autocorrelated above 600m; and developed area is generally autocorrelated except at radii of 300 or 400m.
+
+
+```{r morani_aw2, fig.width=8, fig.height=3, include = F}
+
+states <- farm.land %>% select(PESTS_sitename) %>% mutate(state = substr(PESTS_sitename, 1, 4)) %>%
+  st_set_geometry(NULL)
+
+awt2 <- matrix(NA, nrow = nrow(states), ncol = nrow(states))
+
+for(x in 1:25){
+  for(y in 1:25){
+    xyTF <- states$state[x] == states$state[y]
+    
+    awt2[x,y] = xyTF
+  }
+}
+
+diag(awt2) <- 0
+
+landcovers <- c("agr", "pas", "for", "dev")
+radii <- seq(100, 1500, by = 100)
+
+awt2moran <- list()
+
+for(i in 1:4){
+  for(j in 1:length(radii)){
+    land_ij <- paste(landcovers[i], radii[j], sep = "_")
+    
+    moran_ij <- Moran.I(log(farm.land %>% st_set_geometry(NULL) %>% pull(land_ij) +
+                              (900/radii[j]^2)), awt2)
+    
+    awt2moran[[((i-1)*length(radii))+j]] <- data.frame(
+      landrad = land_ij,
+      land = landcovers[i],
+      dist = radii[j],
+      observed = moran_ij$observed,
+      expected = moran_ij$expected,
+      sd = moran_ij$sd,
+      p.value = moran_ij$p.value
+    )
+  }
+}
+
+awt2morandf <- bind_rows(awt2moran) %>%
+  mutate(sig = ifelse(p.value < 0.05, "*", "ns"))
+
+awt2_expect <- awt2morandf$expected[1]
+
+f4a <- ggplot(awt2morandf, aes(dist, observed, color = land, shape = land)) + geom_point() + geom_line() +
+  geom_hline(yintercept = awt2_expect, color = "red", lty = 2) + theme_article() +
+  xlab("Buffer distance") +
+  ylab("Observed Moran's I") +
+  geom_text(aes(x = 1350, y = awt2_expect), label = "Expected",
+            nudge_y = 0.05, inherit.aes = F) +
+  theme(legend.position = "none")
+
+f4b <- ggplot(awt2morandf, aes(dist, p.value, color = land, shape = land)) + geom_point() + geom_line() +
+  geom_hline(yintercept = 0.05, color = "red", lty = 2) + theme_article() + xlab("Buffer distance") +
+  geom_text(aes(x = 1400, y = 0.05), label = "p = 0.05",
+            nudge_y = 0.05, inherit.aes = F)
+
+ggarrange(plots = list(f4a, f4b), ncol = 2, labels = c("a", "b"))
+
+```
+
+
+## Conclusions
+
+These recalculated Moran's I results make more sense and align better with what I was expecting. In general they tell us that the % cover values calculated at larger buffer distances are spatially autocorrelated, i.e. they may not be spatially independent. Autocorrelation decreases when % area are calculated for smaller radii buffers, except for the smallest buffers. I am not sure how to account for the autocorrelation of the land cover within small buffers. Perhaps this is reflecting similar farm conditions, since a buffer of 100-200m generally still falls within the boundaries of the farm.
+
+## Appendix: Moran's I
+
+Moran's I is defined as 
+
+
+ $$I = \frac{n}{S_0} \frac{\sum_{i=1}^n\sum_{j=1}^n w_{i,j}(y_i - \overline{y})(y_j - \overline{y})}{\sum_{i=1}^n {(y_i - \overline{y})}^2}$$
+where
+    $y_i$ = observations,
+    $w_{i,j}$ = distance weight,
+    $n$ = number of observations,
+    $S_0$ = $\sum_{i=1}^n\sum_{j=1}^n w_{i,j}$
+
+The null hypothesis of no spatial correlation is tested assuming normality of I under this null hypothesis. If the observed value of I is significantly greater than the expected value, then the values of $y$ are positively autocorrelated, whereas if $I_{observed} < I_{expected}$, this will indicate negative autocorrelation.
