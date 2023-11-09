@@ -1,0 +1,297 @@
+---
+title: "Farm visits and landscape"
+author: "Kevin Li"
+date: "10/27/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(egg)
+library(glmmTMB)
+library(DHARMa)
+library(lme4)
+library(mgcv)
+
+fl <- read.csv("./Data/2021_10_26_PR_farm_mean_data_with_landscape_classification_all_scales.csv")
+
+land <- fl %>% select(site_name, for_100:dev_1500) %>% distinct()
+
+```
+
+## R Markdown
+
+```{r plant}
+pl <- read.csv("./Data/2021_11_1_PR_data_with_landscape_classification_all_scales_all_farms.csv")
+
+max.roya <- fl %>% select(site_name, visit, farm_roya) %>%
+  group_by(site_name) %>% mutate(max_roya = max(farm_roya)) %>% ungroup() %>%
+  mutate(max_roya_adju = ifelse(max_roya == 0, 1, max_roya)) %>%
+  mutate(roya_rel = farm_roya/max_roya_adju)
+
+site.max.roya <- max.roya %>% select(site_name, max_roya) %>% distinct()
+
+pln0 <- pl %>% filter(roya !=0) %>% select(site_name, date, visit, plant_ID, 
+                                           roya, lecani, myco, snail, mite,
+                                           for_100:dev_1500) %>%
+  mutate(dens_denom = ifelse(roya>25, 25, roya)) %>% 
+  mutate(lecani_dens = lecani/dens_denom) %>%
+  mutate(myco_dens = myco/dens_denom) %>%
+  mutate(snail_dens = snail/dens_denom) %>%
+  mutate(mite_dens = mite/dens_denom) %>%
+  mutate(site_plant = paste(site_name, plant_ID, sep = "_"))
+
+ggplot(pln0, aes(visit, lecani_dens, color = site_plant)) + geom_point() + geom_line() +
+  geom_line(data = max.roya, mapping = aes(x = visit, y = roya_rel),
+            color = "red", alpha = 0.3, size = 2, inherit.aes = F) + theme_article() +
+  geom_text(data = site.max.roya, mapping = aes(x = 11, y = 0.9, label = max_roya),
+            inherit.aes = F) +
+  theme(legend.position = "none") + facet_wrap(~site_name)
+
+```
+
+```{r roya_pois_farm}
+farmsum <- pl %>% group_by(visit, site_name) %>%
+  summarise(roya_mn = mean(roya), roya_sd = sd(roya), n = n()) %>%
+  ungroup() %>%
+  mutate(roya_rd = round(roya_mn)) %>%
+  left_join(land) %>%
+  mutate(farm = factor(site_name)) %>%
+  filter(site_name != "YAUC5*")
+
+allsum <- farmsum %>% group_by(visit) %>% summarise(roya = mean(roya_mn), royasd = sd(roya_mn), n = n())
+
+farmroyapois <- glmmTMB(roya_rd ~ (1|visit),
+                  family = "nbinom1", data = farmsum)
+
+farmroyagam <- gam(roya_rd ~ s(visit, k = 5, m = 2) + s(farm, bs = "re"),
+                  family = "nb", data = farmsum)
+
+farmroyapoistest <- simulateResiduals(farmroyagam)
+
+plot(farmroyapoistest)
+testDispersion(farmroyapoistest)
+
+distances = seq(100, 1500, by = 100)
+
+farmroyagam_dist <- list()
+
+for(i in 1:15){
+  lc.i = paste(c("agr", "pas", "for"), distances[i], sep = "_")
+  formula.i <- formula(paste("~", paste0(lc.i, collapse = " + "), "+ .", sep = " "))
+  
+  farmroyagam_dist[[i]] <- update(farmroyagam, formula.i)
+}
+
+farmroyagamAIC <- data.frame(distance = distances, AIC = vapply(farmroyagam_dist, AIC, c(1)), BIC = vapply(farmroyagam_dist, BIC, c(1)))
+
+ggplot(farmroyagamAIC, aes(distance, AIC)) + geom_line() + geom_point()
+
+test300 <- simulateResiduals(farmroyapois_dist[[3]])
+
+```
+
+```{r roya_pois}
+royapois <- glmmTMB(roya ~ (1|visit) + (1|site_name/plant_ID),
+                  family = "nbinom2", data = pl)
+
+royapoistest <- simulateResiduals(royapois)
+
+plot(royapoistest)
+testDispersion(royapoistest)
+
+distances = seq(100, 1500, by = 100)
+
+royapois_dist <- list()
+
+for(i in 1:15){
+  lc.i = paste(c("agr", "pas", "for"), distances[i], sep = "_")
+  formula.i <- formula(paste("~", paste0(lc.i, collapse = " + "), "+ .", sep = " "))
+  
+  royapois_dist[[i]] <- update(royapois, formula.i)
+}
+
+royapoisAIC <- data.frame(distance = distances, AIC = vapply(royapois_dist, AIC, c(1)), BIC = vapply(royapois_dist, BIC, c(1)))
+
+ggplot(royapoisAIC, aes(distance, AIC)) + geom_line() + geom_point()
+
+testroya_200 <- simulateResiduals(royapois_dist[[2]])
+
+```
+
+```{r nat_enem_pois}
+lecpois <- glmmTMB(lecani ~ roya + (1|visit) + (1|site_name/plant_ID), 
+                  offset = log(dens_denom),
+                  family = "poisson", data = pln0)
+
+poistest <- simulateResiduals(lecpois)
+
+plot(poistest)
+```
+
+```{r nat_enem_binom}
+lecbinom <- glmmTMB(lecani_dens ~ roya + (1|visit) + (1|site_name/plant_ID), 
+                  weights = dens_denom,
+                  family = "binomial", data = pln0)
+
+binomtest <- simulateResiduals(lecbinom)
+
+plot(binomtest)
+
+testOutliers(binomtest, type = "bootstrap")
+
+performance::compare_performance(lecbinom, lecpois)
+```
+
+```{r test_landscape}
+distances = seq(100, 1500, by = 100)
+
+pois_dist <- list()
+
+for(i in 1:15){
+  lc.i = paste(c("agr", "pas", "for"), distances[i], sep = "_")
+  formula.i <- formula(paste("~", paste0(lc.i, collapse = " + "), "+ .", sep = " "))
+  
+  pois_dist[[i]] <- update(lecpois, formula.i)
+}
+
+poisAIC <- data.frame(distance = distances, AIC = vapply(pois_dist, AIC, c(1)), BIC = vapply(pois_dist, BIC, c(1)))
+
+ggplot(poisAIC, aes(distance, AIC)) + geom_line() + geom_point()
+
+test_1500 <- simulateResiduals(pois_dist[[13]])
+
+binom_dist <- list()
+
+for(i in 1:15){
+  lc.i = paste(c("agr", "pas", "for"), distances[i], sep = "_")
+  formula.i <- formula(paste("~", paste0(lc.i, collapse = " + "), "+ .", sep = " "))
+  
+  binom_dist[[i]] <- update(lecbinom, formula.i)
+}
+
+binomAIC <- data.frame(distance = distances, AIC = vapply(binom_dist, AIC, c(1)), BIC = vapply(binom_dist, BIC, c(1)))
+
+ggplot(binomAIC, aes(distance, AIC)) + geom_line() + geom_point()
+
+binomtest_1300 <- simulateResiduals(binom_dist[[13]])
+
+```
+
+```{r bootstrap}
+pl.sum <- pln0 %>% group_by(visit, site_name) %>%
+  summarize(tot.roya = sum(roya), 
+            tot.sample = sum(dens_denom), 
+            tot.lecan = sum(lecani),
+            n = n()) %>%
+  ungroup() %>%
+  mutate(lec_prob = tot.lecan/tot.sample) %>% 
+  group_by(site_name) %>%
+  summarise(lecprob = mean(lec_prob), totroya = sum(tot.roya), n = sum(n)) %>%
+  left_join(land)
+
+test <- lm(lecprob ~ pas_300 + for_300, data = pl.sum)
+
+lm_dist <- list()
+
+for(i in 1:15){
+  lc.i = paste(c("agr", "pas", "for"), distances[i], sep = "_")
+  formula.i <- formula(paste("lecprob ~", paste0(lc.i, collapse = " + "), sep = " "))
+  
+  lm_dist[[i]] <-lm(formula.i, data = pl.sum)
+}
+
+lmAIC <- data.frame(distance = distances, AIC = vapply(lm_dist, AIC, c(1)), BIC = vapply(lm_dist, BIC, c(1)))
+
+ggplot(lmAIC, aes(distance, AIC)) + geom_line() + geom_point()
+
+summary(lm_dist[[13]])
+
+rm_dist <- list()
+
+for(i in 1:15){
+  lc.i = paste(c("agr", "pas", "for"), distances[i], sep = "_")
+  formula.i <- formula(paste("lecprob ~", paste0(lc.i, collapse = " + "), sep = " "))
+  
+  lm_dist[[i]] <-lm(formula.i, data = pl.sum)
+}
+
+lmAIC <- data.frame(distance = distances, AIC = vapply(lm_dist, AIC, c(1)), BIC = vapply(lm_dist, BIC, c(1)))
+
+ggplot(lmAIC, aes(distance, AIC)) + geom_line() + geom_point()
+
+
+```
+
+```{r model}
+fll <- pivot_longer(fl, cols = for_100:dev_1500, 
+                    names_to = c("lc", "radius"),
+                    names_pattern = "(.*)_(.*)", 
+                    values_to = "area")
+
+fl.prcor <- fll %>% group_by(lc, radius) %>% 
+  dplyr::summarize(pcor = cor(farm_roya, area, use="complete.obs"),
+                   pval = cor.test(farm_roya, area, use="complete.obs")$p.value) %>% ungroup() %>%
+  mutate(radius = as.numeric(radius)) %>%
+  mutate(signif = case_when(
+    pval < 0.001 ~ "***",
+    pval < 0.01 ~ "**",
+    pval < 0.05 ~ "*",
+    pval >= 0.05 ~ "NS"
+  ))
+
+ggplot(fl.prcor, aes(radius, pcor, group = lc, shape = lc)) +
+  geom_line() + 
+  geom_point(
+    mapping = aes(radius, pcor, fill = signif),
+    inherit.aes = T, size = 3) + 
+  theme_article() + 
+  scale_fill_manual(values = c("green", "yellow", "red", "grey")) +
+  scale_shape_manual(values = c(21:24))
+
+```
+
+
+```{r log}
+fll2 <- fll %>% mutate(farm_roya = case_when(
+  farm_roya == 0 ~ 0.1,
+  farm_roya > 0 ~ farm_roya
+))
+
+fl.prcor.log <- fll2 %>% group_by(lc, radius) %>% 
+  dplyr::summarize(
+    pcor = cor(log(farm_roya), area, use="complete.obs"),
+    pval = cor.test(log(farm_roya), area, use="complete.obs")$p.value) %>% ungroup() %>%
+  mutate(radius = as.numeric(radius)) %>%
+  mutate(signif = case_when(
+    pval < 0.001 ~ "***",
+    pval < 0.01 ~ "**",
+    pval < 0.05 ~ "*",
+    pval >= 0.05 ~ "NS"
+  ))
+
+ggplot(fl.prcor.log, aes(radius, pcor, group = lc, shape = lc)) +
+  geom_line() + 
+  geom_point(
+    mapping = aes(radius, pcor, fill = signif),
+    inherit.aes = T, size = 3) + 
+  theme_article() + 
+  scale_fill_manual(values = c("green", "yellow", "red", "grey")) +
+  scale_shape_manual(values = c(21:24))
+
+ggplot(fll2 %>% filter(lc == "for"), 
+       aes(area, log(farm_roya))) + 
+  geom_point() +
+  geom_smooth(method = lm) +
+  facet_wrap(~radius)
+
+ggplot(fll2 %>% filter(lc == "pas"), 
+       aes(area, log(farm_roya))) + 
+  geom_point() + 
+  geom_smooth(method = lm) +
+  facet_wrap(~radius)
+
+
+```

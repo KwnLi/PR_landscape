@@ -1,0 +1,141 @@
+---
+title: "Spatial autocorrelation"
+author: "Kevin Li"
+date: "12/20/2021"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(tidyverse)
+library(sf)
+library(ggspatial)
+library(ape)
+library(egg)
+
+farms <- read.csv("./Data/PR_farms27.csv") %>%
+  st_as_sf(coords = c(4, 3), crs = st_crs(4326)) %>% st_transform(crs = st_crs(6566))
+
+land <- read.csv("./Data/2021_10_26_PR_farm_mean_data_with_landscape_classification_all_scales.csv") %>% select(site_name, for_100:dev_1500) %>% distinct()
+
+farm.land <- inner_join(farms, land, by = c("PESTS_sitename" = "site_name")) %>% filter(!is.na(for_100))
+
+farmdist <- st_distance(farm.land, farm.land)
+units(farmdist) <- NULL
+
+
+```
+
+
+## Semivariograms
+
+We can plot the pairwise distances between farms against their pairwise difference in land cover variables as $\gamma =(x_i - x_j)^2$. This is the semivariogram. Then you can take the mean of $\gamma$ within bins of distances. In the results figures I group distance into bins of 5000m. I guess this mean can be interpreted as the variance within the defined distance ranges between farms. Assuming spatial autocorrelation at shorter distances, you would expect the variance to increase until autocorrelation is no longer a factor (the "sill" in Figure 0). In this method the "range" of figure 0 would be the descriptor of the distance where autocorrelation has an influence. 
+
+![](./Data/variogram.png)
+
+
+**Figure 0** A diagram of modeled semivariance with increasing distance between measured points.
+
+I calculated gamma and took means over their distances for all the landscape variables in the following Results. A more formal approach to this would then fit a model that looks like Figure 0 and estimate the range.
+
+```{r semivariogram, message = F}
+
+landcovers <- c("agr", "pas", "for", "dev")
+radii <- seq(100, 1500, by = 100)
+
+landdist <- list()
+
+for(i in 1:4){
+  for(j in 1:length(radii)){
+    land_ij <- paste(landcovers[i], radii[j], sep = "_")
+    
+    ldfull <- as.matrix(dist(farm.land %>% st_set_geometry(NULL) %>% pull(land_ij))^2)
+
+    landdist[[((i-1)*length(radii))+j]] <- data.frame(
+      landvar = landcovers[i],
+      testdist = radii[j],
+      land_dist = land_ij,
+      dist = c(farmdist[lower.tri(farmdist)]),
+      gamma = c(ldfull[lower.tri(ldfull)])
+      )
+  }
+}
+
+allgamma <- bind_rows(landdist) %>%
+  mutate(distbin = cut(dist, breaks = seq(0, 65000, by = 5000),
+                       labels = seq(2500,62500, by = 5000)))
+
+
+gammasample <- allgamma %>% group_by(landvar, testdist, land_dist, distbin) %>%
+  summarise(n = n(), mean = mean(gamma)) %>% 
+  ungroup() %>%
+  mutate(dist = as.numeric(as.character(distbin)))
+
+```
+
+## Results
+
+```{r semivar_agr, fig.width=7, fig.height=6}
+
+ggplot(allgamma %>% filter(landvar == "agr"),
+       aes(dist, gamma)) + geom_point(shape = "+", color = "blue") + facet_wrap(~testdist, scales = "free_y") +
+  theme_article() +
+  geom_point(data = gammasample %>% filter(landvar == "agr"),
+             aes(dist, mean)) +
+  geom_line(data = gammasample %>% filter(landvar == "agr"),
+             aes(dist, mean)) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+**Figure 1** Agriculture semivariograms. Blue +s are individual farm pairs. Y axis (gamma) = $(x_i - x_j)^2$. Black points are the averaged values over the values within 2500m bins.
+
+```{r semivar_pas, fig.width=7, fig.height=6}
+
+ggplot(allgamma %>% filter(landvar == "pas"),
+       aes(dist, gamma)) + geom_point(shape = "+", color = "blue") + facet_wrap(~testdist, scales = "free_y") +
+  theme_article() +
+  geom_point(data = gammasample %>% filter(landvar == "pas"),
+             aes(dist, mean)) +
+  geom_line(data = gammasample %>% filter(landvar == "pas"),
+             aes(dist, mean))+ 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+**Figure 2** Pasture semivariograms. Blue +s are individual farm pairs. Y axis (gamma) = $(x_i - x_j)^2$. Black points are the averaged values over the values within 2500m bins.
+
+```{r semivar_for, fig.width=7, fig.height=6}
+
+ggplot(allgamma %>% filter(landvar == "for"),
+       aes(dist, gamma)) + geom_point(shape = "+", color = "blue") + facet_wrap(~testdist, scales = "free_y") +
+  theme_article() +
+  geom_point(data = gammasample %>% filter(landvar == "for"),
+             aes(dist, mean)) +
+  geom_line(data = gammasample %>% filter(landvar == "for"),
+             aes(dist, mean))+ 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+**Figure 3** Forest semivariograms. Blue +s are individual farm pairs. Y axis (gamma) = $(x_i - x_j)^2$. Black points are the averaged values over the values within 2500m bins.
+
+```{r semivar_dev, fig.width=7, fig.height=6}
+
+ggplot(allgamma %>% filter(landvar == "dev"),
+       aes(dist, gamma)) + geom_point(shape = "+", color = "blue") + facet_wrap(~testdist, scales = "free_y") +
+  theme_article() +
+  geom_point(data = gammasample %>% filter(landvar == "dev"),
+             aes(dist, mean)) +
+  geom_line(data = gammasample %>% filter(landvar == "dev"),
+             aes(dist, mean))+ 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+**Figure 4** Developed semivariograms. Blue +s are individual farm pairs. Y axis (gamma) = $(x_i - x_j)^2$. Black points are the averaged values over the values within 2500m bins.
+
+## Conclusions
+
+I didn't fit any models but based on eyeballing these plots it seems like, except for development, the variance levels off/decreases after the third point, which suggests that autocorrelation isn't a factor beyond this point. This is the 10000-15000m range. I am also ignoring the very large distances, which we have few data points for. Development levels off sooner, I'd say in the 5000-10000m range. This is all estimation but the next step could be to fit a curve to this. There are packages to do this.

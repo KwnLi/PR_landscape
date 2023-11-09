@@ -1,2 +1,3 @@
 # PR_landscape
- GIS workshop
+
+Github in support of Puerto Rico landscape project(s)
