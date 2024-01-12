@@ -10,25 +10,24 @@ library(terra)
 library(tidyverse)
 library(ggspatial)
 library(landscapemetrics)
-library(raster)
 
 ```
 
 ```{r data_setup}
 
-farms <- read.csv("./Data/PR_farms26.csv")
+farms <- read.csv("./Data/PR_farms27.csv")
 
 farms.sf <- st_as_sf(farms,
-                     coords = c(5, 4),
+                     coords = c(4, 3),
                      crs = st_crs(4326))
 
 lf.evt <- rast("./Data/LF2016_EVT_200_PRVI/Tif/LV16_EVT_200.tif")
 
 lf.evt.table <- cats(lf.evt)[[1]] 
-activeCat(lf.evt) <- "EVT_NAME"  # set the active category of the raster
+# activeCat(lf.evt) <- "Value"  # set the active category of the raster DON'T 
 
-# as.numeric turns the raster into a numeric layer based on the active category set above
-lf.evt.num <- as.numeric(lf)
+# as.numeric turns the raster into a numeric layer based on 'Value'
+lf.evt.num <- as.numeric(lf.evt)
 
 
 ```
@@ -39,7 +38,7 @@ reclass.evt <- read.csv("evt_reclass.csv") %>% dplyr::select(EVT_NAME, reclass) 
   left_join(lf.evt.table %>% rownames_to_column(var="evt.num")) %>% 
   mutate(evt.num = as.numeric(evt.num))
 
-rcl.evt.mat <- reclass.evt %>% dplyr::select(evt.num, reclass.num) %>% as.matrix()
+rcl.evt.mat <- reclass.evt %>% dplyr::select(Value, reclass.num) %>% as.matrix()
 
 lf.class <- classify(lf.evt.num, rcl = rcl.evt.mat)
 
@@ -53,33 +52,33 @@ check_landscape(lf.class)
 ```{r fix_data}
 
 # transform the points to match the landscape layer
-farms.pr <- st_transform(farms.sf, crs = crs(lf))
+farms.pr <- st_transform(farms.sf, crs = crs(lf.class))
 
 ```
 
 ## calculate metrics for multiple radii and metrics
 
 ```{r multiple_buffers}
-buf.dist <- seq(100,1500, by=100) # buffer distances
-metrics <- c("lsm_l_area_mn", "lsm_c_ca", "lsm_l_ed", "lsm_l_te", "lsm_l_shape_mn", "lsm_l_contig_mn", "lsm_l_core_mn", "lsm_l_mesh", "lsm_l_division", "lsm_l_shdi", "lsm_l_pr", "lsm_l_shei", "lsm_l_contag")
-
-
-buffer.output <- list() # outputs for each buffer distance
-
-for(i in 1:length(buf.dist)){
-  buffer.output[[i]] <- sample_lsm(landscape = lf.class, y = farms.pr,
-                            shape = "circle", size = buf.dist[i],
-                            what = "lsm_c_pland", 
-                            plot_id = farms.sp$PESTS_sitename)
-}
-
-# add the metric ID to each distance table and combine tables
-lsmbuffers <- map2(buffer.output, buf.dist, ~.x %>% mutate(distance = .y)) %>%
-  bind_rows()
-
-# here is a table describing the functions in the "metrics" vector
-metrics.details <- lsm_abbreviations_names %>% filter(function_name %in% metrics)
-metrics.details
+# buf.dist <- seq(100,1500, by=100) # buffer distances
+# metrics <- c("lsm_l_area_mn", "lsm_c_ca", "lsm_l_ed", "lsm_l_te", "lsm_l_shape_mn", "lsm_l_contig_mn", "lsm_l_core_mn", "lsm_l_mesh", "lsm_l_division", "lsm_l_shdi", "lsm_l_pr", "lsm_l_shei", "lsm_l_contag")
+# 
+# 
+# buffer.output <- list() # outputs for each buffer distance
+# 
+# for(i in 1:length(buf.dist)){
+#   buffer.output[[i]] <- sample_lsm(landscape = lf.class, y = farms.pr,
+#                             shape = "circle", size = buf.dist[i],
+#                             what = "lsm_c_pland", 
+#                             plot_id = farms.pr$PESTS_sitename)
+# }
+# 
+# # add the metric ID to each distance table and combine tables
+# lsmbuffers <- map2(buffer.output, buf.dist, ~.x %>% mutate(distance = .y)) %>%
+#   bind_rows()
+# 
+# # here is a table describing the functions in the "metrics" vector
+# metrics.details <- lsm_abbreviations_names %>% filter(function_name %in% metrics)
+# metrics.details
 
 # write to file
 # write.csv(lsmbuffers, "lsmbuffers.csv", row.names = FALSE)
@@ -109,9 +108,9 @@ areas.df <- bind_rows(areas, .id = "radius") %>% replace_na(list(frac_9=0, frac_
 reclasses <- reclass.evt %>% dplyr::select(reclass, reclass.num) %>% distinct() %>%
   mutate(fromname = paste0("frac_",reclass.num)) %>% dplyr::select(-reclass.num) %>% deframe()
 
-areas.df <- areas.df %>% rename(!!!reclasses)
+areas.df <- areas.df %>% rename(!!!reclasses[which(reclasses %in% names(areas.df))])  # some columns aren't in reclasses and causes error
 
-write.csv(areas.df, "landcover_buffers.csv", row.names = FALSE)
+write.csv(areas.df, "landcover_buffers_update.csv", row.names = FALSE)
 ```
 
 ```{r ring}
@@ -142,10 +141,12 @@ for(i in 2:length(ring.dist)){
 }
 
 ring.areas.df <- bind_rows(ring.areas, .id = "outer.radius") %>% 
-  replace_na(list(frac_9=0, frac_6=0)) %>%
-  relocate(farm,inner.radius) %>% rename(!!!reclasses)
+  relocate(farm,inner.radius) 
 
-write.csv(ring.areas.df, "landscape_rings.csv", row.names = FALSE)
+ring.areas.df <- ring.areas.df %>% 
+  rename(!!!reclasses[which(reclasses %in% names(ring.areas.df))])
+
+write.csv(ring.areas.df, "landscape_rings_update.csv", row.names = FALSE)
 
 ```
 
@@ -153,7 +154,7 @@ write.csv(ring.areas.df, "landscape_rings.csv", row.names = FALSE)
 
 vegcov <- rast("./Data/LF2016_EVC_200_PRVI/Tif/LV16_EVC_200.tif")
 
-vegcov.table <- cats(trcov)[[1]] 
+vegcov.table <- cats(vegcov)[[1]] 
 
 trcov <- ifel(vegcov<=100 | vegcov>200, 100, vegcov) %>% as.numeric() - 100
 shrcov <- ifel(vegcov<200 | vegcov>264, 200, vegcov) %>% as.numeric() - 200
@@ -200,7 +201,7 @@ allcov.areas <- left_join(
 ) %>%
   left_join(trshr.areas.df, by = "farm")
 
-write.csv(allcov.areas, "veg_cov_buffers.csv", row.names = FALSE)
+write.csv(allcov.areas, "veg_cov_buffers_update.csv", row.names = FALSE)
 
 ```
 
@@ -255,6 +256,6 @@ allcov.rings <- left_join(
 ) %>%
   left_join(trshr.rings.df, by = "farm")
 
-write.csv(allcov.rings, "veg_cov_rings.csv", row.names = FALSE)
+write.csv(allcov.rings, "veg_cov_rings_update.csv", row.names = FALSE)
 
 ```
